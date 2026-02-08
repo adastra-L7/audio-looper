@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>音频无限循环器</title>
+    <!-- 引入 PWA 清单 -->
+    <link rel="manifest" href="manifest.json">
+    <!-- 针对 iOS 的 PWA 设置 -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="LoopTool">
+    <link rel="apple-touch-icon" href="icon-192.png">
+    
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            color: #333;
+            /* 防止手机下拉刷新影响体验 */
+            overscroll-behavior-y: contain; 
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 400px;
+            text-align: center;
+        }
+        h2 { margin-bottom: 20px; color: #1a73e8; }
+        .form-group { margin-bottom: 20px; text-align: left; }
+        label { display: block; margin-bottom: 8px; font-weight: bold; }
+        
+        input[type="file"] {
+            display: block;
+            width: 100%;
+            padding: 10px;
+            background: #f8f9fa;
+            border: 2px dashed #ccc;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+        input[type="number"], input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 16px;
+            box-sizing: border-box; 
+        }
+        
+        button {
+            width: 100%;
+            padding: 15px;
+            background-color: #1a73e8;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover { background-color: #1557b0; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+
+        .progress-area { margin-top: 20px; display: none; }
+        .status { margin-top: 10px; font-size: 14px; color: #666; }
+        
+        .download-btn {
+            display: none;
+            margin-top: 20px;
+            background-color: #34a853;
+            text-decoration: none;
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            font-weight: bold;
+            display: block;
+            text-align: center;
+        }
+        
+        .note {
+            font-size: 12px;
+            color: #888;
+            margin-top: 20px;
+            text-align: left;
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>🎵 音频无限循环器</h2>
+    
+    <div class="form-group">
+        <label>1. 选择 MP3 文件</label>
+        <input type="file" id="fileInput" accept=".mp3">
+    </div>
+
+    <div class="form-group">
+        <label>2. 重复次数</label>
+        <input type="number" id="loopCount" value="108" min="2">
+    </div>
+
+    <div class="form-group">
+        <label>3. 另存为文件名 (可选)</label>
+        <input type="text" id="fileNameInput" placeholder="默认自动生成，可手动修改">
+    </div>
+
+    <button id="processBtn" onclick="processAudio()">开始处理</button>
+
+    <div class="progress-area" id="progressArea">
+        <div class="status" id="statusText">正在读取文件...</div>
+    </div>
+
+    <a id="downloadLink" class="download-btn" style="display:none">📥 点击下载结果</a>
+
+    <div class="note">
+        <strong>💡 PWA 已启用：</strong><br>
+        你可以将此网页“添加到主屏幕”，即可像原生 App 一样离线使用。
+    </div>
+</div>
+
+<script>
+    // === 注册 Service Worker (PWA 核心) ===
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('./sw.js')
+                .then(reg => console.log('PWA Service Worker 注册成功', reg))
+                .catch(err => console.log('PWA 注册失败', err));
+        });
+    }
+
+    // === UI 交互逻辑 ===
+    const fileInput = document.getElementById('fileInput');
+    const fileNameInput = document.getElementById('fileNameInput');
+    const countInput = document.getElementById('loopCount');
+
+    // 当选择文件时，自动填充默认文件名
+    fileInput.addEventListener('change', function() {
+        if (this.files && this.files.length > 0) {
+            const file = this.files[0];
+            const originalName = file.name.replace(/\.[^/.]+$/, ""); // 去掉后缀
+            const count = countInput.value;
+            // 自动填充格式: 原名_108x.mp3
+            fileNameInput.value = `${originalName}_${count}x.mp3`;
+        }
+    });
+
+    // 当修改次数时，如果用户没有手动改过文件名，尝试更新文件名中的次数
+    countInput.addEventListener('input', function() {
+        if (fileInput.files && fileInput.files.length > 0) {
+            const currentName = fileNameInput.value;
+            // 只有当文件名符合 "_数字x" 的格式时才尝试更新，避免覆盖用户的自定义命名
+            if (currentName.match(/_\d+x/)) {
+                 const file = fileInput.files[0];
+                 const originalName = file.name.replace(/\.[^/.]+$/, "");
+                 fileNameInput.value = `${originalName}_${this.value}x.mp3`;
+            }
+        }
+    });
+
+    // === 核心处理逻辑 ===
+    async function processAudio() {
+        const statusText = document.getElementById('statusText');
+        const processBtn = document.getElementById('processBtn');
+        const downloadLink = document.getElementById('downloadLink');
+        const progressArea = document.getElementById('progressArea');
+
+        if (!fileInput.files.length) {
+            alert('请先选择一个 MP3 文件！');
+            return;
+        }
+
+        const file = fileInput.files[0];
+        const count = parseInt(countInput.value);
+
+        if (count < 2) {
+            alert('重复次数至少为 2');
+            return;
+        }
+
+        processBtn.disabled = true;
+        processBtn.innerText = "处理中...";
+        downloadLink.style.display = 'none';
+        progressArea.style.display = 'block';
+        statusText.innerText = "正在读取文件...";
+
+        try {
+            const arrayBuffer = await file.arrayBuffer();
+            const uint8Array = new Uint8Array(arrayBuffer);
+
+            statusText.innerText = "正在分析 MP3 结构...";
+            
+            let startOffset = 0; 
+            let endOffset = uint8Array.length; 
+
+            // 检测头尾标签 (ID3)
+            if (uint8Array[0] === 0x49 && uint8Array[1] === 0x44 && uint8Array[2] === 0x33) {
+                const size = (uint8Array[6] << 21) | (uint8Array[7] << 14) | (uint8Array[8] << 7) | uint8Array[9];
+                startOffset = 10 + size; 
+                console.log("检测到 ID3v2 标签，大小:", startOffset);
+            }
+
+            if (uint8Array.length > 128) {
+                const tagIndex = uint8Array.length - 128;
+                if (uint8Array[tagIndex] === 0x54 && uint8Array[tagIndex+1] === 0x41 && uint8Array[tagIndex+2] === 0x47) {
+                    endOffset = tagIndex;
+                    console.log("检测到 ID3v1 标签，已去除尾部");
+                }
+            }
+
+            const firstPart = uint8Array.slice(0, endOffset);
+            const repeatPart = uint8Array.slice(startOffset, endOffset);
+
+            statusText.innerText = `正在拼接 ${count} 次...`;
+
+            const blobParts = [firstPart];
+            
+            const chunkSize = 50; 
+            for (let i = 1; i < count; i++) {
+                blobParts.push(repeatPart);
+                if (i % chunkSize === 0) {
+                    statusText.innerText = `正在拼接: ${Math.round((i / count) * 100)}%`;
+                    await new Promise(r => setTimeout(r, 0));
+                }
+            }
+
+            statusText.innerText = "正在生成文件...";
+            const finalBlob = new Blob(blobParts, { type: 'audio/mpeg' });
+            
+            const url = URL.createObjectURL(finalBlob);
+            
+            // === 获取自定义文件名 ===
+            let finalName = fileNameInput.value.trim();
+            if (!finalName) {
+                // 如果用户清空了输入框，使用默认名
+                const originalName = file.name.replace(/\.[^/.]+$/, "");
+                finalName = `${originalName}_${count}x_looped.mp3`;
+            }
+            // 智能补全后缀
+            if (!finalName.toLowerCase().endsWith('.mp3')) {
+                finalName += '.mp3';
+            }
+            
+            downloadLink.href = url;
+            downloadLink.download = finalName;
+            downloadLink.style.display = 'block';
+            downloadLink.innerText = `✅ 处理完成！点击下载 (${(finalBlob.size / 1024 / 1024).toFixed(2)} MB)`;
+            
+            statusText.innerText = "完成！";
+
+        } catch (error) {
+            console.error(error);
+            alert("处理出错: " + error.message);
+            statusText.innerText = "出错";
+        } finally {
+            processBtn.disabled = false;
+            processBtn.innerText = "开始处理";
+        }
+    }
+</script>
+
+</body>
+</html>
